@@ -1,0 +1,145 @@
+#!/usr/bin/python
+#coding:utf-8
+import urllib
+import socket
+import time
+import os
+import Queue
+import threading
+
+
+#讀取域名字典文件并返回域名列表
+def getdomainNameList(domainListDic):
+    fileObject = open(domainListDic, 'r')
+    domainNameList = []
+    for eachLine in fileObject:
+	domainNameList.append(eachLine.strip()+ '.' +domainName)
+    return domainNameList
+
+#創建結果存放路徑及文件
+def createFilePath(dnsResultFilePath, nmapResultFilePath):
+    #dns结果文件
+    if os.path.exists(dnsResultFilePath):
+        pass
+    else:
+        os.makedirs(dnsResultFilePath)
+    #nMap结果文件夹
+    if os.path.exists(nmapResultFilePath):
+        pass
+    else:
+        os.makedirs(nmapResultFilePath)
+    
+#获取dnf密码字典中的域名的IP地址并分类
+def getDNSIP(domainNameList, privateIPFile, publicIPFile, allIPFile, errorInfoFile):
+    #IP段列表
+    ipPublicList = []
+    ipPrivateList = []
+    for i in domainNameList:
+	try:
+	    ip = socket.gethostbyname(i)
+	    allIPFile.write(ip + "\t" + i + "\n")
+	    ipSplitList = ip.split('.')
+	    ip0 = int(ipSplitList[0])
+	    ip1 = int(ipSplitList[1])
+	    ip2 = int(ipSplitList[2])
+	    ipStage = str(ip0) + '.' + str(ip1) + '.' + str(ip2)
+	    #區分私有IP地址
+	    if ip0 == 10 or ip0 == 172 and ip1 >= 16 and ip1 <= 31 or ip0 == 192 and ip1 == 168:
+		if ipStage not in ipPrivateList:
+		    ipPrivateList.append(ipStage)
+                    privateIPFile.write(ipStage + "\n")
+	    else:
+		if ipStage not in ipPublicList:
+		    ipPublicList.append(ipStage)
+                    publicIPFile.write(ipStage + "\n")
+	except Exception,e:
+	    allIPFile.write(i + "\t" + str(e) + "\n")
+	    errorInfoFile.write(i + "\t" + str(e) + "\n")
+    return ipPublicList
+
+
+#生成IP地址范围
+def createIPList(ip, scope):
+    ipList = []
+    lists = ip.split('.')
+    if scope == 24:
+	for x in range(1,256):
+	    ipList.append(lists[0] + '.' + lists[1] + '.' + lists[2] + '.' + str(x))
+    elif scope == 16:
+	for x in range(1,256):
+	    for y in range(1,256):
+		ipList.append(lists[0] + '.' + lists[1] + '.' + str(x) + '.' + str(y))
+    return ipList
+
+#创建NMAP线程
+def thread_nmap(ip, portList,  nmapResultFile):
+    command  = 'nmap -v -T5 -P0 -sT -p ' + portList + ' ' + ip  + '  --open | grep "Discovered" >> ' + nmapResultFile
+    os.popen(command)
+
+#主程序入口
+if __name__=="__main__":
+    #结果文件存放主目录
+    resultFilePath = '/usr/data/result/'
+    #查詢的主域名
+    domainName = 'hirisun.com'
+    print "主域名:" + domainName
+    siteName = domainName.split('.')[0]
+    #获取当前时间
+    currentTime = time.strftime('%Y%m%d_%H%M%S',time.localtime(int(time.time())))
+    print "当前时间:" + currentTime
+    #創建結果文件夾及文件
+    dnsResultFilePath = resultFilePath + siteName + '/domain/'
+    nmapResultFilePath = resultFilePath + siteName + '/nmap/'
+    nmapResultFile = nmapResultFilePath + currentTime + '.txt'
+    createFilePath(dnsResultFilePath, nmapResultFilePath)
+    print "domain结果文件夹:" + dnsResultFilePath
+    print "Nmap结果文件夹:" + nmapResultFilePath
+    privateIPFile = open(dnsResultFilePath + currentTime + '_Private', 'w')
+    publicIPFile = open(dnsResultFilePath + currentTime + '_Public', 'w')
+    allIPFile = open(dnsResultFilePath + currentTime + '_All', 'w')
+    errorInfoFile = open(dnsResultFilePath + currentTime + '_Error', 'w')
+    #讀取dns字典
+    domainListDic = '/usr/data/resource/dnsDic.txt'
+    domainList = getdomainNameList(domainListDic)
+    print "DNS字典列表读取成功!"
+    print "正在解析DNS字典中域名的IP地址,请耐心等待..."
+    #获取dnf密码字典中的域名的IP地址并分类
+    finalIPList = getDNSIP(domainList, privateIPFile, publicIPFile, allIPFile, errorInfoFile)
+    privateIPFile.close()
+    publicIPFile.close()
+    allIPFile.close()
+    errorInfoFile.close()
+    print "DNS解析IP成功,IP地址段已成功分类,请查看domain结果文件夹! " + dnsResultFilePath
+    portFile = open('/usr/data/resource/portList', 'r')
+    portList = ''
+    for eachLine in portFile:
+	portList = eachLine.strip()
+    portFile.close()
+    print "常用端口读取成功!"
+    print "队列创建中..."
+    queue_list = Queue.Queue()
+    for i in finalIPList:
+        iplist = createIPList(i.strip(), 24)
+        for x in iplist:
+            t = threading.Thread(target=thread_nmap,args=(x, portList, nmapResultFile))    #创建线程
+            queue_list.put(t)
+    print "对列总数为:" + str(queue_list.qsize())
+    
+    #队列数量
+    print "正在对域名中IP段的主机进行扫描,请耐心等待..."
+    number = 2
+    while not queue_list.empty():
+	print "当前剩余任务数：" + str(queue_list.qsize())
+        if queue_list.qsize() < number:
+            number = queue_list.qsize()
+
+	threads = []
+        for t in range(number):
+            nmapThread = queue_list.get()
+	    threads.append(nmapThread)
+
+	for x in threads:
+            x.start()
+        for y in threads:
+            y.join()
+    print "扫描已完成，请查看扫描结果！结果文件位于：" + nmapResultFile 
